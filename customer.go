@@ -133,6 +133,35 @@ func ListCustomerHTTP(w http.ResponseWriter, r *http.Request) {
 	sendResponse(w, customers)
 }
 
+func FindCustomerByIdHTTP(w http.ResponseWriter, r *http.Request) {
+	client, err := firestore.NewClient(r.Context(), "surebank")
+	if err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot establish database connection")
+		return
+	}
+	var req FindByIdRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot decode client request")
+		return
+	}
+
+	docSnap, err := client.Collection("customer").Doc(req.ID).Get(r.Context())
+	if err != nil {
+		sendError(w, "customer not found")
+		return
+	}
+
+	var customer Customer
+	if err = docSnap.DataTo(&customer); err != nil {
+		sendError(w, "cannot map customer data")
+		return
+	}
+
+	sendResponse(w, customer)
+}
+
 // CreateAccountHTTP is an HTTP Cloud Function for creating an account
 func CreateAccountHTTP(w http.ResponseWriter, r *http.Request) {
 	client, err := firestore.NewClient(r.Context(), "surebank")

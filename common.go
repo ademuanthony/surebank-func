@@ -32,3 +32,7 @@ func write(w http.ResponseWriter, data response) {
 		fmt.Errorf("Error in sending response, %s", err.Error())
 	}
 }
+
+type FindByIdRequest struct {
+	ID string `json:"id"`
+}
