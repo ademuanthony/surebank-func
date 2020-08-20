@@ -12,6 +12,7 @@ import (
 
 	"cloud.google.com/go/firestore"
 	"github.com/pborman/uuid"
+	"google.golang.org/api/iterator"
 )
 
 // CreateCustomerHTTP is an HTTP Cloud Function for creating a customer
@@ -82,6 +83,96 @@ func CreateCustomerHTTP(w http.ResponseWriter, r *http.Request) {
 	sendResponse(w, m)
 }
 
+func ListCustomerHTTP(w http.ResponseWriter, r *http.Request) {
+	client, err := firestore.NewClient(r.Context(), "surebank")
+	if err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot establish database connection")
+		return
+	}
+	var req FindCustomerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot decode client request")
+		return
+	}
+
+	var query firestore.Query = client.Collection("customer").OrderBy("CreatedAt", firestore.Desc)
+	if req.Limit > 0 {
+		query = query.Limit(req.Limit)
+	}
+	if req.Offset > 0 {
+		query = query.Offset(req.Offset)
+	}
+	if req.SalesRepID != "" {
+		query = query.Where("SalesRepID", "==", req.SalesRepID)
+	}
+
+	var customers []Customer
+	iter := query.Documents(r.Context())
+	defer iter.Stop()
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+			sendError(w, "cannot read customer data")
+			return
+		}
+		var c Customer
+		if err = doc.DataTo(&c); err != nil {
+			log.Fatal(err)
+			sendError(w, "cannot read customer data")
+			return
+		}
+		customers = append(customers, c)
+	}
+
+	sendResponse(w, customers)
+}
+
+// CreateAccountHTTP is an HTTP Cloud Function for creating an account
+func CreateAccountHTTP(w http.ResponseWriter, r *http.Request) {
+	client, err := firestore.NewClient(r.Context(), "surebank")
+	if err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot establish database connection")
+		return
+	}
+	var req Account
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot decode client request")
+		return
+	}
+	if req.CustomerID == "" {
+		sendError(w, "customer ID is required")
+		return
+	}
+	if req.Type == "" {
+		sendError(w, "account type is required is required")
+		return
+	}
+
+	accountNumber, err := generateAccountNumber(r.Context(), client, req.Type)
+	if err != nil {
+		sendError(w, fmt.Sprintf("cannot generate account number, %s", err.Error()))
+		return
+	}
+
+	req.Number = accountNumber
+
+	if _, err := client.Batch().
+		Create(client.Doc("account/"+accountNumber), req).Commit(r.Context()); err != nil {
+		sendError(w, err.Error())
+		return
+	}
+
+	sendResponse(w, req)
+}
+
 func generateAccountNumber(ctx context.Context, client *firestore.Client, accountType string) (string, error) {
 	var accountNumber string
 	var unique bool
@@ -116,11 +207,20 @@ type Customer struct {
 	ArchivedAt  *time.Time `json:"archived_at,omitempty" truss:"api-hide"`
 }
 
+// FindRequest defines the possible options to search for customers. By default
+// archived checklist will be excluded from response.
+type FindCustomerRequest struct {
+	SalesRepID string        `json:"sales_rep_id" example:"dfasf-q43-dfas-32432sdaf-adsf"`
+	Args       []interface{} `json:"args" swaggertype:"array,string" example:"Moon Launch,active"`
+	Order      []string      `json:"order" example:"created_at desc"`
+	Limit      int           `json:"limit" example:"10"`
+	Offset     int           `json:"offset" example:"20"`
+}
+
 // Account represents a customer account.
 type Account struct {
-	ID              string     `json:"id" validate:"required,uuid" example:"985f1746-1d9f-459f-a2d9-fc53ece5ae86"`
-	CustomerID      string     `json:"customer_id" validate:"required,uuid" example:"985f1746-1d9f-459f-a2d9-fc53ece5ae86"`
 	Number          string     `json:"number"  validate:"required" example:"Rocket Launch"`
+	CustomerID      string     `json:"customer_id" validate:"required,uuid" example:"985f1746-1d9f-459f-a2d9-fc53ece5ae86"`
 	Type            string     `json:"type" truss:"api-read"`
 	Balance         float64    `json:"balance" truss:"api-read"`
 	Target          float64    `json:"target" truss:"api-read"`
@@ -133,8 +233,7 @@ type Account struct {
 	ArchivedAt      *time.Time `json:"archived_at,omitempty" truss:"api-hide"`
 	SalesRep        string     `json:"sales_rep" truss:"api-read"`
 	Branch          string     `json:"branch" truss:"api-read"`
-
-	Customer string `json:"customer"`
+	Customer        string     `json:"customer"`
 }
 
 // CreateCustomerRequest contains information needed to create a new Customer.

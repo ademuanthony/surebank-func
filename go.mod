@@ -6,4 +6,5 @@ require (
 	cloud.google.com/go/firestore v1.3.0
 	github.com/google/uuid v1.1.1 // indirect
 	github.com/pborman/uuid v1.2.1
+	google.golang.org/api v0.29.0
 )
