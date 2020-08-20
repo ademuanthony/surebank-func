@@ -84,19 +84,16 @@ func CreateCustomerHTTP(w http.ResponseWriter, r *http.Request) {
 
 func generateAccountNumber(ctx context.Context, client *firestore.Client, accountType string) (string, error) {
 	var accountNumber string
-	var found bool
-	for !found {
+	var unique bool
+	for !unique {
 		accountNumber = accountType
 		rand.Seed(time.Now().UTC().UnixNano())
 		for i := 0; i < 5; i++ {
 			accountNumber += strconv.Itoa(rand.Intn(10))
 		}
-		acc, err := client.Doc("account/" + accountNumber).Get(ctx)
+		_, err := client.Doc("account/" + accountNumber).Get(ctx)
 		if err != nil {
-			return "", err
-		}
-		if !acc.Exists() {
-			found = true
+			unique = true
 		}
 	}
 	return accountNumber, nil
