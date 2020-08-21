@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-
-	firestore "cloud.google.com/go/firestore/apiv1"
 )
 
 const (

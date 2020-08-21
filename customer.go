@@ -366,8 +366,8 @@ func ListDebtorsHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var query firestore.Query = client.Collection("account").Where("Type", "==", "DS").
 		Where("LastPaymentDate", ">=", thirtyDaysAgo).
-		Where("LastPaymentDate", ">=", threeDaysAgo).
-		OrderBy("CreatedAt", firestore.Desc)
+		Where("LastPaymentDate", "<=", threeDaysAgo).
+		OrderBy("LastPaymentDate", firestore.Asc)
 	if req.Limit > 0 {
 		query = query.Limit(req.Limit)
 	}
@@ -414,6 +414,35 @@ func ListDebtorsHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sendPagedResponse(w, accounts, totalCount.Count)
+}
+
+func FindAccountByIdHTTP(w http.ResponseWriter, r *http.Request) {
+	client, err := firestore.NewClient(r.Context(), "surebank")
+	if err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot establish database connection")
+		return
+	}
+	var req FindByIdRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot decode client request")
+		return
+	}
+
+	docSnap, err := client.Collection("account").Doc(req.ID).Get(r.Context())
+	if err != nil {
+		sendError(w, "account not found")
+		return
+	}
+
+	var account Account
+	if err = docSnap.DataTo(&account); err != nil {
+		sendError(w, "cannot map account data")
+		return
+	}
+
+	sendResponse(w, account)
 }
 
 func generateAccountNumber(ctx context.Context, client *firestore.Client, accountType string) (string, error) {
