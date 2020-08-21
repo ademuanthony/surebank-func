@@ -2,8 +2,10 @@ package surebankltd
 
 import (
 	"encoding/json"
-	"fmt"
+	"log"
 	"net/http"
+
+	firestore "cloud.google.com/go/firestore/apiv1"
 )
 
 const (
@@ -18,6 +20,13 @@ type response struct {
 	Success bool        `json:"success"`
 }
 
+type pagedResponse struct {
+	Data       interface{} `json:"data"`
+	TotalCount int         `json:"total_count"`
+	Message    string      `json:"message"`
+	Success    bool        `json:"success"`
+}
+
 func sendError(w http.ResponseWriter, err string) {
 	write(w, response{Message: err})
 }
@@ -26,13 +35,21 @@ func sendResponse(w http.ResponseWriter, data interface{}) {
 	write(w, response{Success: true, Data: data})
 }
 
-func write(w http.ResponseWriter, data response) {
+func sendPagedResponse(w http.ResponseWriter, data interface{}, totalCount int) {
+	write(w, pagedResponse{Success: true, Data: data, TotalCount: totalCount})
+}
+
+func write(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", MIMEApplicationJSONCharsetUTF8)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		fmt.Errorf("Error in sending response, %s", err.Error())
+		log.Fatalf("Error in sending response, %s", err.Error())
 	}
 }
 
 type FindByIdRequest struct {
 	ID string `json:"id"`
+}
+
+type DocumentCount struct {
+	Count int
 }

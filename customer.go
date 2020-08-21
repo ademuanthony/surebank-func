@@ -74,8 +74,12 @@ func CreateCustomerHTTP(w http.ResponseWriter, r *http.Request) {
 		Type:       req.Type,
 	}
 
-	if _, err := client.Batch().Create(customerCollection.Doc(m.ID), m).
-		Create(client.Doc("account/"+accountNumber), account).Commit(r.Context()); err != nil {
+	if _, err := client.Batch().
+		Create(customerCollection.Doc(m.ID), m).
+		Update(client.Doc("stats/customer"), []firestore.Update{{Path: "Count", Value: firestore.Increment(1)}}).
+		Create(client.Doc("account/"+accountNumber), account).
+		Update(client.Doc("stats/account"), []firestore.Update{{Path: "Count", Value: firestore.Increment(1)}}).
+		Commit(r.Context()); err != nil {
 		sendError(w, err.Error())
 		return
 	}
@@ -130,7 +134,19 @@ func ListCustomerHTTP(w http.ResponseWriter, r *http.Request) {
 		customers = append(customers, c)
 	}
 
-	sendResponse(w, customers)
+	var totalCount DocumentCount
+	countSnap, err := client.Doc("stats/customer").Get(r.Context())
+	if err != nil {
+		sendError(w, "cannot get the total count of customers")
+		log.Fatal(err)
+		return
+	}
+	if err = countSnap.DataTo(&totalCount); err != nil {
+		sendError(w, "unable to read customer total count")
+		log.Fatal(err)
+		return
+	}
+	sendPagedResponse(w, customers, totalCount.Count)
 }
 
 func FindCustomerByIdHTTP(w http.ResponseWriter, r *http.Request) {
@@ -194,12 +210,210 @@ func CreateAccountHTTP(w http.ResponseWriter, r *http.Request) {
 	req.Number = accountNumber
 
 	if _, err := client.Batch().
-		Create(client.Doc("account/"+accountNumber), req).Commit(r.Context()); err != nil {
+		Create(client.Doc("account/"+accountNumber), req).
+		Update(client.Doc("stats/account"), []firestore.Update{{Path: "Count", Value: firestore.Increment(1)}}).
+		Commit(r.Context()); err != nil {
 		sendError(w, err.Error())
 		return
 	}
 
 	sendResponse(w, req)
+}
+
+func ListAccountHTTP(w http.ResponseWriter, r *http.Request) {
+	client, err := firestore.NewClient(r.Context(), "surebank")
+	if err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot establish database connection")
+		return
+	}
+	var req FindCustomerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot decode client request")
+		return
+	}
+
+	var query firestore.Query = client.Collection("account").OrderBy("CreatedAt", firestore.Desc)
+	if req.Limit > 0 {
+		query = query.Limit(req.Limit)
+	}
+	if req.Offset > 0 {
+		query = query.Offset(req.Offset)
+	}
+	if req.SalesRepID != "" {
+		query = query.Where("SalesRepID", "==", req.SalesRepID)
+	}
+
+	var accounts []Account
+	iter := query.Documents(r.Context())
+	defer iter.Stop()
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+			sendError(w, "cannot read account data")
+			return
+		}
+		var c Account
+		if err = doc.DataTo(&c); err != nil {
+			log.Fatal(err)
+			sendError(w, "cannot read account data")
+			return
+		}
+		accounts = append(accounts, c)
+	}
+
+	var totalCount DocumentCount
+	countSnap, err := client.Doc("stats/account").Get(r.Context())
+	if err != nil {
+		sendError(w, "cannot get the total count of accounts")
+		log.Fatal(err)
+		return
+	}
+	if err = countSnap.DataTo(&totalCount); err != nil {
+		sendError(w, "unable to read account total count")
+		log.Fatal(err)
+		return
+	}
+	sendPagedResponse(w, accounts, totalCount.Count)
+}
+
+func ListDSAccountHTTP(w http.ResponseWriter, r *http.Request) {
+	client, err := firestore.NewClient(r.Context(), "surebank")
+	if err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot establish database connection")
+		return
+	}
+	var req FindCustomerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot decode client request")
+		return
+	}
+
+	var query firestore.Query = client.Collection("account").Where("Type", "==", "DS").Where("Balance", ">", 0).
+		OrderBy("CreatedAt", firestore.Desc)
+	if req.Limit > 0 {
+		query = query.Limit(req.Limit)
+	}
+	if req.Offset > 0 {
+		query = query.Offset(req.Offset)
+	}
+	if req.SalesRepID != "" {
+		query = query.Where("SalesRepID", "==", req.SalesRepID)
+	}
+
+	var accounts []Account
+	iter := query.Documents(r.Context())
+	defer iter.Stop()
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+			sendError(w, "cannot read account data")
+			return
+		}
+		var c Account
+		if err = doc.DataTo(&c); err != nil {
+			log.Fatal(err)
+			sendError(w, "cannot read account data")
+			return
+		}
+		accounts = append(accounts, c)
+	}
+
+	var totalCount DocumentCount
+	countSnap, err := client.Doc("stats/account").Get(r.Context())
+	if err != nil {
+		sendError(w, "cannot get the total count of customers")
+		log.Fatal(err)
+		return
+	}
+	if err = countSnap.DataTo(&totalCount); err != nil {
+		sendError(w, "unable to read customer total count")
+		log.Fatal(err)
+		return
+	}
+
+	sendPagedResponse(w, accounts, totalCount.Count)
+}
+
+func ListDebtorsHTTP(w http.ResponseWriter, r *http.Request) {
+	client, err := firestore.NewClient(r.Context(), "surebank")
+	if err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot establish database connection")
+		return
+	}
+	var req FindCustomerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Fatal(err)
+		sendError(w, "cannot decode client request")
+		return
+	}
+
+	currentDate := time.Now()
+	threeDaysAgo := currentDate.Add(-3 * 24 * time.Hour).Unix()
+	thirtyDaysAgo := currentDate.Add(-30 * 24 * time.Hour).Unix()
+
+	var query firestore.Query = client.Collection("account").Where("Type", "==", "DS").
+		Where("LastPaymentDate", ">=", thirtyDaysAgo).
+		Where("LastPaymentDate", ">=", threeDaysAgo).
+		OrderBy("CreatedAt", firestore.Desc)
+	if req.Limit > 0 {
+		query = query.Limit(req.Limit)
+	}
+	if req.Offset > 0 {
+		query = query.Offset(req.Offset)
+	}
+	if req.SalesRepID != "" {
+		query = query.Where("SalesRepID", "==", req.SalesRepID)
+	}
+
+	var accounts []Account
+	iter := query.Documents(r.Context())
+	defer iter.Stop()
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+			sendError(w, "cannot read account data")
+			return
+		}
+		var c Account
+		if err = doc.DataTo(&c); err != nil {
+			log.Fatal(err)
+			sendError(w, "cannot read account data")
+			return
+		}
+		accounts = append(accounts, c)
+	}
+
+	var totalCount DocumentCount
+	countSnap, err := client.Doc("stats/account").Get(r.Context())
+	if err != nil {
+		sendError(w, "cannot get the total count of customers")
+		log.Fatal(err)
+		return
+	}
+	if err = countSnap.DataTo(&totalCount); err != nil {
+		sendError(w, "unable to read customer total count")
+		log.Fatal(err)
+		return
+	}
+
+	sendPagedResponse(w, accounts, totalCount.Count)
 }
 
 func generateAccountNumber(ctx context.Context, client *firestore.Client, accountType string) (string, error) {
