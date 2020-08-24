@@ -1,0 +1,1 @@
+Dear {{ .Name }}, your account has been debited with {{ .Amount }}. You new balance is {{ .Balance }}

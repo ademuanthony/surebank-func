@@ -1,0 +1,1 @@
+Dear {{ .Name }}, your daily contribution of {{ .Amount }} has been received for {{ .EffectiveDate }}. You new balance is {{ .Balance }}

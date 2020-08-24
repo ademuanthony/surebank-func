@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 )
 
 const (
@@ -20,7 +21,7 @@ type response struct {
 
 type pagedResponse struct {
 	Data       interface{} `json:"data"`
-	TotalCount int         `json:"total_count"`
+	TotalCount int64       `json:"total_count"`
 	Message    string      `json:"message"`
 	Success    bool        `json:"success"`
 }
@@ -33,7 +34,7 @@ func sendResponse(w http.ResponseWriter, data interface{}) {
 	write(w, response{Success: true, Data: data})
 }
 
-func sendPagedResponse(w http.ResponseWriter, data interface{}, totalCount int) {
+func sendPagedResponse(w http.ResponseWriter, data interface{}, totalCount int64) {
 	write(w, pagedResponse{Success: true, Data: data, TotalCount: totalCount})
 }
 
@@ -44,10 +45,21 @@ func write(w http.ResponseWriter, data interface{}) {
 	}
 }
 
+func timeNow() time.Time {
+	return time.Now().UTC().Add(1 * time.Hour)
+}
+
 type FindByIdRequest struct {
 	ID string `json:"id"`
 }
 
-type DocumentCount struct {
+type documentCount struct {
 	Count int
+}
+
+type txStat struct {
+	Count int
+	Total float64
+	Bank  float64
+	Cash  float64
 }

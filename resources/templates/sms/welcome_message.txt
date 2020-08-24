@@ -1,0 +1,1 @@
+Dear {{ .Name }}, welcome to Surebank. Your account number if {{ .AccountNumber }}. Account target {{ .Target }}

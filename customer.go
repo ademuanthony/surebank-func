@@ -15,17 +15,22 @@ import (
 	"google.golang.org/api/iterator"
 )
 
+const (
+	AccountTypeDS = "DS"
+	AccountTypeSB = "SB"
+)
+
 // CreateCustomerHTTP is an HTTP Cloud Function for creating a customer
 func CreateCustomerHTTP(w http.ResponseWriter, r *http.Request) {
 	client, err := firestore.NewClient(r.Context(), "surebank")
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot establish database connection")
 		return
 	}
 	var req CreateCustomerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot decode client request")
 		return
 	}
@@ -39,7 +44,7 @@ func CreateCustomerHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	customerCollection := client.Collection("customer")
-	now := time.Now().UTC()
+	now := timeNow()
 	m := Customer{
 		ID:          uuid.NewRandom().String(),
 		Email:       req.Email,
@@ -47,9 +52,9 @@ func CreateCustomerHTTP(w http.ResponseWriter, r *http.Request) {
 		PhoneNumber: req.PhoneNumber,
 		Address:     req.Address,
 		SalesRepID:  req.SalesRepID,
-		CreatedAt:   now,
+		CreatedAt:   now.Unix(),
 		BranchID:    req.BranchID,
-		UpdatedAt:   now,
+		UpdatedAt:   now.Unix(),
 		Branch:      req.Branch,
 		SalesRep:    req.SalesRep,
 		ShortName:   req.ShortName,
@@ -74,11 +79,27 @@ func CreateCustomerHTTP(w http.ResponseWriter, r *http.Request) {
 		Type:       req.Type,
 	}
 
-	if _, err := client.Batch().
+	customerStat := client.Doc("stats/customer")
+	customerCounter, err := initCounter(r.Context(), 10, customerStat)
+	if err != nil {
+		log.Println(err)
+		sendError(w, "Cannot init customer count")
+	}
+	batch := customerCounter.incrementCounter(r.Context(), customerStat, 1, client.Batch())
+
+	accountStat := client.Doc("stats/account")
+	accountCounter, err := initCounter(r.Context(), 10, accountStat)
+	if err != nil {
+		log.Println(err)
+		sendError(w, "Cannot init account count")
+	}
+	batch = accountCounter.incrementCounter(r.Context(), accountStat, 1, batch)
+
+	if _, err := batch.
 		Create(customerCollection.Doc(m.ID), m).
-		Update(client.Doc("stats/customer"), []firestore.Update{{Path: "Count", Value: firestore.Increment(1)}}).
+		Update(customerStat, []firestore.Update{{Path: "Count", Value: firestore.Increment(1)}}).
 		Create(client.Doc("account/"+accountNumber), account).
-		Update(client.Doc("stats/account"), []firestore.Update{{Path: "Count", Value: firestore.Increment(1)}}).
+		Update(accountStat, []firestore.Update{{Path: "Count", Value: firestore.Increment(1)}}).
 		Commit(r.Context()); err != nil {
 		sendError(w, err.Error())
 		return
@@ -90,13 +111,13 @@ func CreateCustomerHTTP(w http.ResponseWriter, r *http.Request) {
 func ListCustomerHTTP(w http.ResponseWriter, r *http.Request) {
 	client, err := firestore.NewClient(r.Context(), "surebank")
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot establish database connection")
 		return
 	}
 	var req FindCustomerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot decode client request")
 		return
 	}
@@ -121,44 +142,39 @@ func ListCustomerHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
 			sendError(w, "cannot read customer data")
 			return
 		}
 		var c Customer
 		if err = doc.DataTo(&c); err != nil {
-			log.Fatal(err)
+			log.Println(err)
 			sendError(w, "cannot read customer data")
 			return
 		}
 		customers = append(customers, c)
 	}
 
-	var totalCount DocumentCount
-	countSnap, err := client.Doc("stats/customer").Get(r.Context())
+	customerStatRef := client.Doc("stats/customer")
+	totalCount, err := getCount(r.Context(), customerStatRef)
 	if err != nil {
 		sendError(w, "cannot get the total count of customers")
-		log.Fatal(err)
+		log.Println(err)
 		return
 	}
-	if err = countSnap.DataTo(&totalCount); err != nil {
-		sendError(w, "unable to read customer total count")
-		log.Fatal(err)
-		return
-	}
-	sendPagedResponse(w, customers, totalCount.Count)
+	sendPagedResponse(w, customers, totalCount)
 }
 
 func FindCustomerByIdHTTP(w http.ResponseWriter, r *http.Request) {
 	client, err := firestore.NewClient(r.Context(), "surebank")
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot establish database connection")
 		return
 	}
 	var req FindByIdRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot decode client request")
 		return
 	}
@@ -182,13 +198,13 @@ func FindCustomerByIdHTTP(w http.ResponseWriter, r *http.Request) {
 func CreateAccountHTTP(w http.ResponseWriter, r *http.Request) {
 	client, err := firestore.NewClient(r.Context(), "surebank")
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot establish database connection")
 		return
 	}
 	var req Account
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot decode client request")
 		return
 	}
@@ -208,10 +224,22 @@ func CreateAccountHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Number = accountNumber
+	now := timeNow()
+	req.CreatedAt = now.Unix()
+	req.UpdatedAt = now.Unix()
+
+	accountStat := client.Doc("stats/account")
+	if _, err := accountStat.Get(r.Context()); err != nil {
+		_, err = accountStat.Set(r.Context(), documentCount{})
+		if err != nil {
+			log.Println(err)
+			sendError(w, "Cannot init account count")
+		}
+	}
 
 	if _, err := client.Batch().
 		Create(client.Doc("account/"+accountNumber), req).
-		Update(client.Doc("stats/account"), []firestore.Update{{Path: "Count", Value: firestore.Increment(1)}}).
+		Update(accountStat, []firestore.Update{{Path: "Count", Value: firestore.Increment(1)}}).
 		Commit(r.Context()); err != nil {
 		sendError(w, err.Error())
 		return
@@ -223,13 +251,13 @@ func CreateAccountHTTP(w http.ResponseWriter, r *http.Request) {
 func ListAccountHTTP(w http.ResponseWriter, r *http.Request) {
 	client, err := firestore.NewClient(r.Context(), "surebank")
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot establish database connection")
 		return
 	}
 	var req FindCustomerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot decode client request")
 		return
 	}
@@ -254,44 +282,39 @@ func ListAccountHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
 			sendError(w, "cannot read account data")
 			return
 		}
 		var c Account
 		if err = doc.DataTo(&c); err != nil {
-			log.Fatal(err)
+			log.Println(err)
 			sendError(w, "cannot read account data")
 			return
 		}
 		accounts = append(accounts, c)
 	}
 
-	var totalCount DocumentCount
-	countSnap, err := client.Doc("stats/account").Get(r.Context())
+	customerStatRef := client.Doc("stats/account")
+	totalCount, err := getCount(r.Context(), customerStatRef)
 	if err != nil {
 		sendError(w, "cannot get the total count of accounts")
-		log.Fatal(err)
+		log.Println(err)
 		return
 	}
-	if err = countSnap.DataTo(&totalCount); err != nil {
-		sendError(w, "unable to read account total count")
-		log.Fatal(err)
-		return
-	}
-	sendPagedResponse(w, accounts, totalCount.Count)
+	sendPagedResponse(w, accounts, totalCount)
 }
 
 func ListDSAccountHTTP(w http.ResponseWriter, r *http.Request) {
 	client, err := firestore.NewClient(r.Context(), "surebank")
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot establish database connection")
 		return
 	}
 	var req FindCustomerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot decode client request")
 		return
 	}
@@ -317,45 +340,40 @@ func ListDSAccountHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
 			sendError(w, "cannot read account data")
 			return
 		}
 		var c Account
 		if err = doc.DataTo(&c); err != nil {
-			log.Fatal(err)
+			log.Println(err)
 			sendError(w, "cannot read account data")
 			return
 		}
 		accounts = append(accounts, c)
 	}
 
-	var totalCount DocumentCount
-	countSnap, err := client.Doc("stats/account").Get(r.Context())
+	customerStatRef := client.Doc("stats/account")
+	totalCount, err := getCount(r.Context(), customerStatRef)
 	if err != nil {
-		sendError(w, "cannot get the total count of customers")
-		log.Fatal(err)
-		return
-	}
-	if err = countSnap.DataTo(&totalCount); err != nil {
-		sendError(w, "unable to read customer total count")
-		log.Fatal(err)
+		sendError(w, "cannot get the total count of accounts")
+		log.Println(err)
 		return
 	}
 
-	sendPagedResponse(w, accounts, totalCount.Count)
+	sendPagedResponse(w, accounts, totalCount)
 }
 
 func ListDebtorsHTTP(w http.ResponseWriter, r *http.Request) {
 	client, err := firestore.NewClient(r.Context(), "surebank")
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot establish database connection")
 		return
 	}
 	var req FindCustomerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot decode client request")
 		return
 	}
@@ -387,62 +405,65 @@ func ListDebtorsHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
 			sendError(w, "cannot read account data")
 			return
 		}
 		var c Account
 		if err = doc.DataTo(&c); err != nil {
-			log.Fatal(err)
+			log.Println(err)
 			sendError(w, "cannot read account data")
 			return
 		}
 		accounts = append(accounts, c)
 	}
 
-	var totalCount DocumentCount
-	countSnap, err := client.Doc("stats/account").Get(r.Context())
+	customerStatRef := client.Doc("stats/account")
+	totalCount, err := getCount(r.Context(), customerStatRef)
 	if err != nil {
-		sendError(w, "cannot get the total count of customers")
-		log.Fatal(err)
-		return
-	}
-	if err = countSnap.DataTo(&totalCount); err != nil {
-		sendError(w, "unable to read customer total count")
-		log.Fatal(err)
+		sendError(w, "cannot get the total count of accounts")
+		log.Println(err)
 		return
 	}
 
-	sendPagedResponse(w, accounts, totalCount.Count)
+	sendPagedResponse(w, accounts, totalCount)
 }
 
 func FindAccountByIdHTTP(w http.ResponseWriter, r *http.Request) {
 	client, err := firestore.NewClient(r.Context(), "surebank")
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot establish database connection")
 		return
 	}
 	var req FindByIdRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		sendError(w, "cannot decode client request")
 		return
 	}
 
-	docSnap, err := client.Collection("account").Doc(req.ID).Get(r.Context())
+	account, err := getAccountByNumber(r.Context(), req.ID, client)
 	if err != nil {
-		sendError(w, "account not found")
-		return
-	}
-
-	var account Account
-	if err = docSnap.DataTo(&account); err != nil {
-		sendError(w, "cannot map account data")
+		log.Println(err)
+		sendError(w, "Cannot read account by the specified number")
 		return
 	}
 
 	sendResponse(w, account)
+}
+
+func getAccountByNumber(ctx context.Context, accountNumber string, client *firestore.Client) (*Account, error) {
+	docSnap, err := client.Collection("account").Doc(accountNumber).Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var account Account
+	if err = docSnap.DataTo(&account); err != nil {
+		return nil, err
+	}
+	return &account, nil
 }
 
 func generateAccountNumber(ctx context.Context, client *firestore.Client, accountType string) (string, error) {
@@ -464,19 +485,19 @@ func generateAccountNumber(ctx context.Context, client *firestore.Client, accoun
 
 // Customer represents a workflow.
 type Customer struct {
-	ID          string     `json:"id" validate:"required,uuid" example:"985f1746-1d9f-459f-a2d9-fc53ece5ae86"`
-	Name        string     `json:"name"  validate:"required" example:"Rocket Launch"`
-	ShortName   string     `json:"short_name"`
-	Email       string     `json:"email" truss:"api-read"`
-	PhoneNumber string     `json:"phone_number" truss:"api-read"`
-	Address     string     `json:"address" truss:"api-read"`
-	SalesRepID  string     `json:"sales_rep_id" truss:"api-read"`
-	BranchID    string     `json:"branch_id" truss:"api-read"`
-	SalesRep    string     `json:"sales_rep" truss:"api-read"`
-	Branch      string     `json:"branch" truss:"api-read"`
-	CreatedAt   time.Time  `json:"created_at" truss:"api-read"`
-	UpdatedAt   time.Time  `json:"updated_at" truss:"api-read"`
-	ArchivedAt  *time.Time `json:"archived_at,omitempty" truss:"api-hide"`
+	ID          string `json:"id" validate:"required,uuid" example:"985f1746-1d9f-459f-a2d9-fc53ece5ae86"`
+	Name        string `json:"name"  validate:"required" example:"Rocket Launch"`
+	ShortName   string `json:"short_name"`
+	Email       string `json:"email" truss:"api-read"`
+	PhoneNumber string `json:"phone_number" truss:"api-read"`
+	Address     string `json:"address" truss:"api-read"`
+	SalesRepID  string `json:"sales_rep_id" truss:"api-read"`
+	BranchID    string `json:"branch_id" truss:"api-read"`
+	SalesRep    string `json:"sales_rep" truss:"api-read"`
+	Branch      string `json:"branch" truss:"api-read"`
+	CreatedAt   int64  `json:"created_at" truss:"api-read"`
+	UpdatedAt   int64  `json:"updated_at" truss:"api-read"`
+	ArchivedAt  int64  `json:"archived_at,omitempty" truss:"api-hide"`
 }
 
 // FindRequest defines the possible options to search for customers. By default
@@ -491,21 +512,24 @@ type FindCustomerRequest struct {
 
 // Account represents a customer account.
 type Account struct {
-	Number          string     `json:"number"  validate:"required" example:"Rocket Launch"`
-	CustomerID      string     `json:"customer_id" validate:"required,uuid" example:"985f1746-1d9f-459f-a2d9-fc53ece5ae86"`
-	Type            string     `json:"type" truss:"api-read"`
-	Balance         float64    `json:"balance" truss:"api-read"`
-	Target          float64    `json:"target" truss:"api-read"`
-	TargetInfo      string     `json:"target_info" truss:"api-read"`
-	SalesRepID      string     `json:"sales_rep_id" truss:"api-read"`
-	BranchID        string     `json:"branch_id" truss:"api-read"`
-	LastPaymentDate time.Time  `json:"last_payment_date"`
-	CreatedAt       time.Time  `json:"created_at" truss:"api-read"`
-	UpdatedAt       time.Time  `json:"updated_at" truss:"api-read"`
-	ArchivedAt      *time.Time `json:"archived_at,omitempty" truss:"api-hide"`
-	SalesRep        string     `json:"sales_rep" truss:"api-read"`
-	Branch          string     `json:"branch" truss:"api-read"`
-	Customer        string     `json:"customer"`
+	Number             string  `json:"number"  validate:"required" example:"Rocket Launch"`
+	CustomerID         string  `json:"customer_id" validate:"required,uuid" example:"985f1746-1d9f-459f-a2d9-fc53ece5ae86"`
+	Type               string  `json:"type" truss:"api-read"`
+	Balance            float64 `json:"balance" truss:"api-read"`
+	Target             float64 `json:"target" truss:"api-read"`
+	TargetInfo         string  `json:"target_info" truss:"api-read"`
+	SalesRepID         string  `json:"sales_rep_id" truss:"api-read"`
+	BranchID           string  `json:"branch_id" truss:"api-read"`
+	LastPaymentDate    int64   `json:"last_payment_date"`
+	LastCommissionDate int64   `json:"last_commission"`
+	CreatedAt          int64   `json:"created_at" truss:"api-read"`
+	UpdatedAt          int64   `json:"updated_at" truss:"api-read"`
+	ArchivedAt         int64   `json:"archived_at,omitempty" truss:"api-hide"`
+	SalesRep           string  `json:"sales_rep" truss:"api-read"`
+	Branch             string  `json:"branch" truss:"api-read"`
+	Customer           string  `json:"customer"`
+
+	RecentTransactions []Transaction
 }
 
 // CreateCustomerRequest contains information needed to create a new Customer.
