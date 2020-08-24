@@ -188,7 +188,6 @@ func FindCustomerByIdHTTP(w http.ResponseWriter, r *http.Request) {
 	sendResponse(w, customer)
 }
 
-
 func getCustomerByID(ctx context.Context, id string, client *firestore.Client) (*Customer, error) {
 	docSnap, err := client.Collection("customer").Doc(id).Get(ctx)
 	if err != nil {

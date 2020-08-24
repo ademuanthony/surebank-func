@@ -29,14 +29,17 @@ const (
 	PaymentMethod_Bank string = "bank_deposit"
 )
 
-// CreateTransactionHTTP is an HTTP Cloud Function with a request parameter.
-func CreateTransactionHTTP(w http.ResponseWriter, r *http.Request) {
-	var d Transaction
-	if err := json.NewDecoder(r.Body).Decode(&d); err != nil {
-		fmt.Fprint(w, "Hello, World!")
-		return
+func getTransactionByReceiptNumber(ctx context.Context, receiptNo string, client *firestore.Client) (*Transaction, error) {
+	docSnap, err := client.Collection("transaction").Doc(receiptNo).Get(ctx)
+	if err != nil {
+		return nil, err
 	}
 
+	var tx Transaction
+	if err = docSnap.DataTo(&tx); err != nil {
+		return nil, err
+	}
+	return &tx, nil
 }
 
 func Deposit(w http.ResponseWriter, r *http.Request) {
@@ -258,6 +261,7 @@ func create(ctx context.Context, req Transaction, currentDate time.Time, client 
 		{Path: "Balance", Value: account.Balance},
 		{Path: "LastPaymentDate", Value: effectiveDate.Unix()},
 		{Path: "LastCommissionDate", Value: account.LastCommissionDate},
+		{Path: "RecentTransactions", Value: account.RecentTransactions},
 	})
 	globalBalance := req.Amount * -1
 	if req.Type == TransactionType_Deposit {
@@ -436,6 +440,99 @@ func readTransactionByReceiptNumber(ctx context.Context, receiptNumber string, c
 	return &tx, nil
 }
 
+// Archive soft deleted the transaction from the database.
+func ArchiveTransaction(w http.ResponseWriter, r *http.Request) {
+	currentDate := timeNow()
+	client, err := firestore.NewClient(r.Context(), "surebank")
+	if err != nil {
+		log.Println(err)
+		sendError(w, "cannot establish database connection")
+		return
+	}
+
+	var req ArchiveTransactionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Println(err)
+		sendError(w, "cannot decode client request")
+		return
+	}
+
+	tranx, err := getTransactionByReceiptNumber(r.Context(), req.ID, client)
+	if err != nil {
+		log.Println(err)
+		sendError(w, "cannot read transaction, please check the receipt number")
+		return
+	}
+
+	if tranx.ArchivedAt > 0 {
+		sendError(w, "This transaction has been archived")
+		return
+	}
+
+	batch := client.Batch().Update(client.Doc("transaction/"+req.ID), []firestore.Update{{Path: "", Value: currentDate.Unix()}})
+
+	var txAmount = tranx.Amount
+	if tranx.Type == TransactionType_Deposit {
+		txAmount *= -1
+	}
+	account, err := getAccountByNumber(r.Context(), tranx.AccountNumber, client)
+	if err != nil {
+		sendError(w, "cannot read error")
+		return
+	}
+	accountRef := client.Doc("account/" + tranx.AccountNumber)
+	batch = batch.Update(accountRef, []firestore.Update{
+		{Path: "Balance", Value: account.Balance},
+	})
+
+	globalBalance := tranx.Amount
+	if tranx.Type == TransactionType_Deposit {
+		globalBalance *= -1
+		// deposit count
+		today := now.New(time.Unix(tranx.CreatedAt, 0))
+		dailySummaryRef := client.Doc(fmt.Sprintf("dailySummary/%d", today.Unix()))
+		batch = batch.Update(dailySummaryRef, []firestore.Update{{Path: "Income", Value: firestore.Increment(-1 * tranx.Amount)}})
+
+		tsCountRef := client.Doc(fmt.Sprintf("stats/transaction/%d/%s/count", today.Unix(), tranx.Type))
+		tsCounter, err := initCounter(r.Context(), 10, tsCountRef)
+		if err != nil {
+			sendErrorf(w, "cannot initialize transaction count stat, %s", err.Error())
+			return
+		}
+		batch = tsCounter.incrementCounter(r.Context(), tsCountRef, -1, batch)
+		// deposit total
+		txTotalRef := client.Doc(fmt.Sprintf("stats/transaction/%d/%s/total", today.Unix(), tranx.Type))
+		tsTotal, err := initCounter(r.Context(), 10, txTotalRef)
+		if err != nil {
+			sendErrorf(w, "cannot initialize transaction total stat, %s", err.Error())
+			return
+		}
+		batch = tsTotal.incrementCounter(r.Context(), txTotalRef, tranx.Amount*-1, batch)
+		// reps stat
+		repStatRef := client.Doc(fmt.Sprintf("stats/transaction/%d/%s/%s", today.Unix(), tranx.SalesRepID, tranx.PaymentMethod))
+		repStat, err := initCounter(r.Context(), 10, repStatRef)
+		if err != nil {
+			sendErrorf(w, "cannot initialize transaction reps stat, %s", err.Error())
+		}
+		batch = repStat.incrementCounter(r.Context(), repStatRef, tranx.Amount*-1, batch)
+	}
+
+	// global balance
+	txTotalRef := client.Doc(fmt.Sprintf("stats/globalBalance/%s", account.Type))
+	tsTotal, err := initCounter(r.Context(), 10, txTotalRef)
+	if err != nil {
+		sendErrorf(w, "cannot initialize transaction total stat, %s", err.Error())
+	}
+	batch = tsTotal.incrementCounter(r.Context(), txTotalRef, globalBalance, batch)
+
+	if _, err = batch.Commit(r.Context()); err != nil {
+		sendErrorf(w, "error in committing transaction, %s", err.Error())
+		return
+	}
+
+	sendResponse(w, true)
+}
+
 type TransactionType string
 
 type Transaction struct {
@@ -453,6 +550,12 @@ type Transaction struct {
 	CreatedAt     int64           `json:"created_at" truss:"api-read"`            // CreatedAt contains multiple format options for display.
 	UpdatedAt     int64           `json:"updated_at" truss:"api-read"`            // UpdatedAt contains multiple format options for display.
 	ArchivedAt    int64           `json:"archived_at,omitempty" truss:"api-read"` // ArchivedAt contains multiple format options for display.
+}
+
+// ArchiveTransactionRequest defines the information needed to archive a deposit. This will archive (soft-delete) the
+// existing database entry.
+type ArchiveTransactionRequest struct {
+	ID string `json:"id" validate:"required,uuid" example:"985f1746-1d9f-459f-a2d9-fc53ece5ae86"`
 }
 
 // WithdrawRequest contains information needed to make a new Transaction.
