@@ -179,19 +179,27 @@ func FindCustomerByIdHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	docSnap, err := client.Collection("customer").Doc(req.ID).Get(r.Context())
+	customer, err := getCustomerByID(r.Context(), req.ID, client)
 	if err != nil {
-		sendError(w, "customer not found")
-		return
-	}
-
-	var customer Customer
-	if err = docSnap.DataTo(&customer); err != nil {
 		sendError(w, "cannot map customer data")
 		return
 	}
 
 	sendResponse(w, customer)
+}
+
+
+func getCustomerByID(ctx context.Context, id string, client *firestore.Client) (*Customer, error) {
+	docSnap, err := client.Collection("customer").Doc(id).Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var customer Customer
+	if err = docSnap.DataTo(&customer); err != nil {
+		return nil, err
+	}
+	return &customer, nil
 }
 
 // CreateAccountHTTP is an HTTP Cloud Function for creating an account

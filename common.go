@@ -2,6 +2,7 @@ package surebankltd
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -28,6 +29,10 @@ type pagedResponse struct {
 
 func sendError(w http.ResponseWriter, err string) {
 	write(w, response{Message: err})
+}
+
+func sendErrorf(w http.ResponseWriter, format string, args ...interface{}) {
+	write(w, response{Message: fmt.Sprintf(format, args...)})
 }
 
 func sendResponse(w http.ResponseWriter, data interface{}) {
