@@ -27,7 +27,8 @@ var bulkSmsNigeria *BulkSmsNigeria
 
 func init() {
 	var err error
-	bulkSmsNigeria, err = NewBulkSmsNigeria("", "", "", *http.DefaultClient)
+	bulkSmsNigeria, err = NewBulkSmsNigeria(os.Getenv("SMS_Auth_TOKEN"),
+		"SUREBLTD", "./resources/templates/sms", *http.DefaultClient)
 	if err != nil {
 		log.Fatal(err)
 	}
